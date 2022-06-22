@@ -3,6 +3,7 @@ use tokio::net::TcpListener;
 
 async fn client_handle(mut socket : tokio::net::TcpStream) {
     let mut buf = vec![0; 1024];
+
     loop {
         match socket.read(&mut buf).await {
             // Return value of `Ok(0)` signifies that the remote has closed
