@@ -1,52 +1,43 @@
 
-mod relay;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, BufReader, AsyncBufReadExt}, 
+    net::TcpListener, sync::broadcast
+};
 
-use std::net::{TcpStream};
-use std::io::{Read, Write};
-use std::str::from_utf8;
-
-use futures::join;
+const BUFFSIZE : usize = 16384;
 
 #[tokio::main]
 async fn main() {
-    relay::run().await;
+    let listener = TcpListener::bind("127.0.0.1:8000").await.unwrap();
 
-    join!(relay::run(), test_client());
-}
+    let (_tx, _rx) = broadcast::channel::<[u8; BUFFSIZE]>(10);
 
+    loop {  
+        let (mut socket , _addr ) = listener.accept().await.unwrap();
+        let tx = _tx.clone();
+        let mut rx = tx.subscribe();
 
-async fn test_client() {
-    let client_handle = tokio::spawn(async move || {
-        relay::run().await;
-    });
-    client_handle.await;
-    match TcpStream::connect("localhost:3333") {
-        Ok(mut stream) => {
-            println!("Successfully connected to server in port 3333");
-
-            let msg = b"Hello!";
-
-            stream.write(msg).unwrap();
-            println!("Sent Hello, awaiting reply...");
-
-            let mut data = [0 as u8; 6]; // using 6 byte buffer
-            match stream.read_exact(&mut data) {
-                Ok(_) => {
-                    if &data == msg {
-                        println!("Reply is ok!");
-                    } else {
-                        let text = from_utf8(&data).unwrap();
-                        println!("Unexpected reply: {}", text);
+        tokio::spawn(async move {
+            let (mut read_sock, mut write_sock) = socket.split();
+            // let mut reader = BufReader::new(read_sock);
+            // let mut line = String::new();
+            let mut buffer = [0u8; BUFFSIZE];
+        
+            loop {
+                tokio::select! {
+                    result = read_sock.read(&mut buffer) => {
+                        let size = result.unwrap();
+                        if size == 0 { 
+                            break;
+                        }
+                        tx.send(buffer).unwrap();
+                    },
+                    result = rx.recv() => {
+                        let msg = result.unwrap();
+                        write_sock.write_all(&msg).await.unwrap();   
                     }
-                },
-                Err(e) => {
-                    println!("Failed to receive data: {}", e);
                 }
             }
-        },
-        Err(e) => {
-            println!("Failed to connect: {}", e);
-        }
+        });
     }
-    println!("Terminated.");
 }
