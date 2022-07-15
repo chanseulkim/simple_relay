@@ -1,38 +1,50 @@
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 
-async fn client_handle(mut socket : tokio::net::TcpStream) {
-    let mut buf = vec![0; 1024];
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt}, 
+    net::{TcpListener, TcpStream}, sync::broadcast::{self, Sender, Receiver}
+};
 
+const BUFFSIZE : usize = 16384;
+
+async fn client_handle(mut socket : TcpStream, tx : Sender<Vec<u8>>, mut rx : Receiver<Vec<u8>>) {
+    let (mut read_sock, mut write_sock) = socket.split();
+    let mut buffer = [0u8; BUFFSIZE];
     loop {
-        match socket.read(&mut buf).await {
-            // Return value of `Ok(0)` signifies that the remote has closed
-            Ok(0) => return,
-            Ok(n) => {
-                // Copy the data back to socket
-                if socket.write_all(&buf[..n]).await.is_err() {
-                    // Unexpected socket error. There isn't much we can
-                    // do here so just stop processing.
-                    return;
+        tokio::select! {
+            result = read_sock.read(&mut buffer) => {
+                let size = result.unwrap();
+                if size == 0 {
+                    println!("no data");
+                    break;
                 }
-            }
-            Err(_) => {
-                // Unexpected socket error. There isn't much we can do
-                // here so just stop processing.
-                return;
+                tx.send(buffer.to_vec()).unwrap();
+            },
+            result = rx.recv() => {
+                let mut msg = result.unwrap();
+                write_sock.write_all(msg.as_mut_slice()).await.unwrap();   
             }
         }
     }
 }
 
-pub async fn run() -> io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:6142").await?;
+pub async fn run() {
+    let addr = "127.0.0.1:50800";
+    let listener = TcpListener::bind(addr).await.unwrap();
+    println!("server run {}", addr);
 
-    loop {
-        let (mut socket, _) = listener.accept().await?;
+    
+    let (_tx, _rx) = broadcast::channel::<Vec<u8>>(10);
+
+    loop {  
+        let (socket , _addr ) = listener.accept().await.unwrap();
+        let tx = _tx.clone();
+        let rx = tx.subscribe();
 
         tokio::spawn(async move {
-            client_handle(socket).await;
+            let ip = socket.peer_addr().unwrap().ip().to_string();
+            println!("on client {}", &ip);
+            client_handle(socket, tx, rx).await;
+            println!("out client {}", &ip);
         });
     }
 }
